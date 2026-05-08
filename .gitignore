@@ -62,6 +62,10 @@ data/temp/
 *.csv
 *.xlsx
 
+# Allow reference folder
+!reference/
+!reference/*.csv
+
 # =========================
 
 # OCR Output

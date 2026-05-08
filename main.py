@@ -14,7 +14,7 @@ load_dotenv()
 
 THAI_DIGITS = str.maketrans("๐๑๒๓๔๕๖๗๘๙", "0123456789")
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-REF_PATH    = os.path.join(SCRIPT_DIR, "candidates_ref.csv")
+REF_PATH    = os.path.join(SCRIPT_DIR, "reference", "candidates_ref.csv")
 
 
 # ---------------------------------------------------------------------------
