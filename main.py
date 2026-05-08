@@ -313,12 +313,16 @@ def save_to_csv(header_info: dict, candidates: list[dict], output_path: str,
 
     rows = [{**header_info, **c} for c in candidates]
 
-    with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
+    file_exists = os.path.isfile(output_path)
+    mode = "a" if file_exists else "w"
+
+    with open(output_path, mode, newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
+        if not file_exists:
+            writer.writeheader()
         writer.writerows(rows)
 
-    print(f"✅ Saved {len(rows)} rows → {output_path}")
+    print(f"✅ {'Appended' if file_exists else 'Created'} {len(rows)} rows → {output_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -326,8 +330,20 @@ def save_to_csv(header_info: dict, candidates: list[dict], output_path: str,
 # ---------------------------------------------------------------------------
 
 def main():
-    image_path = os.path.join(SCRIPT_DIR, "data/raw_jpg/ตำบลกำแพงเซา/หน่วยเลือกตั้งที่ 1/ส.ส.5.18 /สส-1.jpg")
-    output_csv = os.path.join(SCRIPT_DIR, "output.csv")
+    script_dir = SCRIPT_DIR
+
+    # Accept image path from command line argument or use default
+    if len(sys.argv) > 1:
+        image_path = sys.argv[1]
+        if not os.path.isabs(image_path):
+            image_path = os.path.join(script_dir, image_path)
+    else:
+        image_path = os.path.join(script_dir, "data/raw_jpg/ตำบลกำแพงเซา/หน่วยเลือกตั้งที่ 1/5.18/สส-1.jpg")
+
+    # Output to output/raw_csv/constituency.csv (append mode)
+    output_dir = os.path.join(script_dir, "output", "raw_csv")
+    os.makedirs(output_dir, exist_ok=True)
+    output_csv = os.path.join(output_dir, "constituency.csv")
 
     api_key = os.getenv("TYPHOON_OCR_API_KEY", "")
     if not api_key:
