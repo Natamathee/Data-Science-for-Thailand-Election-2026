@@ -238,6 +238,173 @@ def find_suspicious_stations(df: pd.DataFrame, threshold: float = 10.0) -> pd.Da
     return df[df['invalid_rate'] > threshold]
 
 # ============================================================================
+# POLITICAL INSIGHTS FUNCTIONS
+# ============================================================================
+
+def analyze_split_ticket_voting(const_df: pd.DataFrame, party_df: pd.DataFrame) -> pd.DataFrame:
+    """Analyze split-ticket voting behavior by comparing constituency vs party-list votes"""
+    if const_df.empty or party_df.empty:
+        return pd.DataFrame()
+    
+    # Get party votes from constituency
+    const_party = const_df.groupby('พรรค')['คะแนน'].sum().reset_index()
+    const_party.columns = ['Party', 'Constituency_Votes']
+    
+    # Get party-list votes
+    party_votes = party_df.groupby('พรรคการเมือง')['คะแนน'].sum().reset_index()
+    party_votes.columns = ['Party', 'PartyList_Votes']
+    
+    # Merge and calculate difference
+    comparison = pd.merge(const_party, party_votes, on='Party', how='outer').fillna(0)
+    comparison['Difference'] = comparison['PartyList_Votes'] - comparison['Constituency_Votes']
+    comparison['Split_Pct'] = (comparison['Difference'] / comparison['Constituency_Votes'] * 100).replace([float('inf'), -float('inf')], 0)
+    
+    return comparison.sort_values('Difference', ascending=False)
+
+def find_stronghold_subdistricts(df: pd.DataFrame, min_votes: int = 100) -> pd.DataFrame:
+    """Find subdistricts where parties have strong support"""
+    if df.empty or 'ตำบล' not in df.columns:
+        return pd.DataFrame()
+    
+    # Get top party per subdistrict
+    subdistrict_party = df.groupby(['ตำบล', 'พรรค'])['คะแนน'].sum().reset_index()
+    
+    # Get total votes per subdistrict
+    total_per_subdistrict = subdistrict_party.groupby('ตำบล')['คะแนน'].sum().reset_index()
+    total_per_subdistrict.columns = ['ตำบล', 'Total_Votes']
+    
+    # Merge and calculate percentage
+    subdistrict_party = pd.merge(subdistrict_party, total_per_subdistrict, on='ตำบล')
+    subdistrict_party['Vote_Share'] = (subdistrict_party['คะแนน'] / subdistrict_party['Total_Votes'] * 100)
+    
+    # Get top party per subdistrict
+    idx = subdistrict_party.groupby('ตำบล')['คะแนน'].idxmax()
+    strongholds = subdistrict_party.loc[idx]
+    
+    # Filter by minimum votes and sort
+    strongholds = strongholds[strongholds['คะแนน'] >= min_votes].sort_values('Vote_Share', ascending=False)
+    
+    return strongholds[['ตำบล', 'พรรค', 'คะแนน', 'Vote_Share']]
+
+def analyze_candidate_strength(df: pd.DataFrame) -> pd.DataFrame:
+    """Analyze candidate personal vote strength vs party performance"""
+    if df.empty:
+        return pd.DataFrame()
+    
+    # Get candidate votes
+    cand_votes = df.groupby(['ชื่อสกุล', 'พรรค'])['คะแนน'].sum().reset_index()
+    
+    # Get party total votes
+    party_total = df.groupby('พรรค')['คะแนน'].sum().reset_index()
+    party_total.columns = ['พรรค', 'Party_Total']
+    
+    # Merge and calculate personal vote strength
+    cand_analysis = pd.merge(cand_votes, party_total, on='พรรค')
+    cand_analysis['Personal_Strength'] = (cand_analysis['คะแนน'] / cand_analysis['Party_Total'] * 100)
+    
+    return cand_analysis.sort_values('คะแนน', ascending=False)
+
+def find_competitive_areas(df: pd.DataFrame, margin_threshold: float = 5.0) -> pd.DataFrame:
+    """Find subdistricts with close competition (small margin between top 2)"""
+    if df.empty or 'ตำบล' not in df.columns:
+        return pd.DataFrame()
+    
+    # Get votes by subdistrict and candidate
+    subdistrict_cand = df.groupby(['ตำบล', 'ชื่อสกุล', 'พรรค'])['คะแนน'].sum().reset_index()
+    
+    competitive = []
+    
+    for subdistrict in subdistrict_cand['ตำบล'].unique():
+        sub_data = subdistrict_cand[subdistrict_cand['ตำบล'] == subdistrict].sort_values('คะแนน', ascending=False)
+        
+        if len(sub_data) >= 2:
+            top1 = sub_data.iloc[0]
+            top2 = sub_data.iloc[1]
+            total_votes = sub_data['คะแนน'].sum()
+            
+            if total_votes > 0:
+                margin = ((top1['คะแนน'] - top2['คะแนน']) / total_votes * 100)
+                
+                if margin <= margin_threshold:
+                    competitive.append({
+                        'ตำบล': subdistrict,
+                        'Winner': top1['ชื่อสกุล'],
+                        'Winner_Party': top1['พรรค'],
+                        'Winner_Votes': top1['คะแนน'],
+                        'Runner_Up': top2['ชื่อสกุล'],
+                        'Runner_Up_Party': top2['พรรค'],
+                        'Runner_Up_Votes': top2['คะแนน'],
+                        'Margin_Pct': margin
+                    })
+    
+    return pd.DataFrame(competitive).sort_values('Margin_Pct') if competitive else pd.DataFrame()
+
+def analyze_turnout_anomalies(df: pd.DataFrame, std_threshold: float = 2.0) -> pd.DataFrame:
+    """Find polling stations with unusual turnout rates"""
+    if df.empty:
+        return pd.DataFrame()
+    
+    required = ['ตำบล', 'หน่วยเลือกตั้งที่', 'จำนวนผู้มีสิทธิเลือกตั้ง', 'จำนวนผู้มาแสดงตน']
+    if not all(col in df.columns for col in required):
+        return pd.DataFrame()
+    
+    # Group by station
+    station_data = df.groupby(['ตำบล', 'หน่วยเลือกตั้งที่']).agg({
+        'จำนวนผู้มีสิทธิเลือกตั้ง': 'first',
+        'จำนวนผู้มาแสดงตน': 'first'
+    }).reset_index()
+    
+    station_data['turnout_rate'] = (station_data['จำนวนผู้มาแสดงตน'] / station_data['จำนวนผู้มีสิทธิเลือกตั้ง'] * 100)
+    
+    # Calculate mean and std
+    mean_turnout = station_data['turnout_rate'].mean()
+    std_turnout = station_data['turnout_rate'].std()
+    
+    # Find anomalies
+    station_data['z_score'] = (station_data['turnout_rate'] - mean_turnout) / std_turnout
+    anomalies = station_data[abs(station_data['z_score']) > std_threshold]
+    
+    return anomalies.sort_values('z_score', ascending=False)
+
+def compare_early_vs_regular(const_df: pd.DataFrame, early_const_df: pd.DataFrame) -> dict:
+    """Compare voting patterns between early and regular voting"""
+    insights = {}
+    
+    if const_df.empty or early_const_df.empty:
+        return insights
+    
+    # Regular voting - group by candidate
+    regular_cand = const_df.groupby(['ชื่อสกุล', 'พรรค'])['คะแนน'].sum().reset_index()
+    regular_total = regular_cand['คะแนน'].sum()
+    regular_cand['Regular_Pct'] = (regular_cand['คะแนน'] / regular_total * 100) if regular_total > 0 else 0
+    
+    # Early voting - group by ชุดที่ first, then candidate
+    if 'ชุดที่' in early_const_df.columns:
+        early_grouped = early_const_df.groupby(['ชุดที่', 'ชื่อสกุล', 'พรรค'])['คะแนน'].sum().reset_index()
+        early_cand = early_grouped.groupby(['ชื่อสกุล', 'พรรค'])['คะแนน'].sum().reset_index()
+    else:
+        early_cand = early_const_df.groupby(['ชื่อสกุล', 'พรรค'])['คะแนน'].sum().reset_index()
+    
+    early_total = early_cand['คะแนน'].sum()
+    early_cand['Early_Pct'] = (early_cand['คะแนน'] / early_total * 100) if early_total > 0 else 0
+    
+    # Merge and compare
+    comparison = pd.merge(
+        regular_cand[['ชื่อสกุล', 'พรรค', 'Regular_Pct']], 
+        early_cand[['ชื่อสกุล', 'พรรค', 'Early_Pct']], 
+        on=['ชื่อสกุล', 'พรรค'], 
+        how='outer'
+    ).fillna(0)
+    
+    comparison['Difference'] = comparison['Early_Pct'] - comparison['Regular_Pct']
+    
+    insights['comparison'] = comparison.sort_values('Difference', ascending=False)
+    insights['biggest_gainer'] = comparison.loc[comparison['Difference'].idxmax()] if not comparison.empty else None
+    insights['biggest_loser'] = comparison.loc[comparison['Difference'].idxmin()] if not comparison.empty else None
+    
+    return insights
+
+# ============================================================================
 # VISUALIZATION FUNCTIONS
 # ============================================================================
 
@@ -499,10 +666,17 @@ def main():
     
     # Winning candidate
     winning_candidate = "N/A"
+    winning_candidate_party = ""
     if 'ชื่อสกุล' in filtered_const.columns and 'คะแนน' in filtered_const.columns:
         cand_votes = safe_groupby_sum(filtered_const, 'ชื่อสกุล', 'คะแนน')
         if not cand_votes.empty:
             winning_candidate = cand_votes.loc[cand_votes['คะแนน'].idxmax(), 'ชื่อสกุล']
+            # Get the party of the winning candidate
+            if 'พรรค' in filtered_const.columns:
+                winner_data = filtered_const[filtered_const['ชื่อสกุล'] == winning_candidate]
+                if not winner_data.empty:
+                    winning_candidate_party = winner_data['พรรค'].iloc[0]
+                    winning_candidate = f"{winning_candidate} ({winning_candidate_party})"
     
     # Winning party
     winning_party = "N/A"
@@ -650,7 +824,13 @@ def main():
         
         if 'พรรคการเมือง' in filtered_party.columns and 'พรรค' in df_early_party.columns:
             regular_party = safe_groupby_sum(filtered_party, 'พรรคการเมือง', 'คะแนน')
-            early_party = safe_groupby_sum(df_early_party, 'พรรค', 'คะแนน')
+            
+            # Group early party by ชุดที่ first to avoid double counting
+            if 'ชุดที่' in df_early_party.columns:
+                early_party_grouped = df_early_party.groupby(['ชุดที่', 'พรรค'])['คะแนน'].sum().reset_index()
+                early_party = early_party_grouped.groupby('พรรค')['คะแนน'].sum().reset_index()
+            else:
+                early_party = safe_groupby_sum(df_early_party, 'พรรค', 'คะแนน')
             
             if not regular_party.empty and not early_party.empty:
                 regular_party.columns = ['Party', 'Regular']
@@ -735,16 +915,20 @@ def main():
     total_invalid_combined = total_invalid + early_invalid
     total_no_vote_combined = total_no_vote + early_no_vote
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.metric("📋 Total Ballots", f"{total_ballots_combined:,.0f}")
     
     with col2:
+        valid_rate = (total_valid_combined / total_ballots_combined * 100) if total_ballots_combined > 0 else 0
+        st.metric("✅ Valid Ballots", f"{total_valid_combined:,.0f}", f"{valid_rate:.2f}%")
+    
+    with col3:
         invalid_rate = (total_invalid_combined / total_ballots_combined * 100) if total_ballots_combined > 0 else 0
         st.metric("❌ Invalid Ballots", f"{total_invalid_combined:,.0f}", f"{invalid_rate:.2f}%")
     
-    with col3:
+    with col4:
         no_vote_rate = (total_no_vote_combined / total_ballots_combined * 100) if total_ballots_combined > 0 else 0
         st.metric("⚪ No Vote", f"{total_no_vote_combined:,.0f}", f"{no_vote_rate:.2f}%")
     
@@ -773,9 +957,506 @@ def main():
     st.markdown("---")
     
     # ========================================================================
-    # SECTION 7: VALIDATION CHECKS
+    # SECTION 7: POLITICAL INSIGHTS
     # ========================================================================
-    st.header("7️⃣ Validation & Quality Checks")
+    st.header("7️⃣ Political Insights & Analysis")
+    st.markdown("")
+    
+    insight_tab1, insight_tab2, insight_tab3, insight_tab4 = st.tabs([
+        "🎯 Key Findings", 
+        "🔄 Split-Ticket Analysis", 
+        "📍 Geographic Patterns",
+        "⚡ Competitive Analysis"
+    ])
+    
+    with insight_tab1:
+        st.markdown("")
+        st.subheader("📊 Key Political Insights")
+        st.markdown("")
+        
+        # Winning trends
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 🏆 Winning Party Trends")
+            
+            # Constituency winner
+            if 'ชื่อสกุล' in filtered_const.columns and 'พรรค' in filtered_const.columns:
+                cand_votes = safe_groupby_sum(filtered_const, 'ชื่อสกุล', 'คะแนน')
+                if not cand_votes.empty:
+                    winner_idx = cand_votes['คะแนน'].idxmax()
+                    winner_name = cand_votes.loc[winner_idx, 'ชื่อสกุล']
+                    winner_votes = cand_votes.loc[winner_idx, 'คะแนน']
+                    
+                    # Get winner's party
+                    winner_party = filtered_const[filtered_const['ชื่อสกุล'] == winner_name]['พรรค'].iloc[0]
+                    
+                    total_const_votes = cand_votes['คะแนน'].sum()
+                    winner_pct = (winner_votes / total_const_votes * 100) if total_const_votes > 0 else 0
+                    
+                    st.success(f"**Constituency Winner:** {winner_name} ({winner_party})")
+                    st.metric("Vote Share", f"{winner_pct:.1f}%", f"{winner_votes:,.0f} votes")
+            
+            # Party-list winner
+            if 'พรรคการเมือง' in filtered_party.columns:
+                party_votes = safe_groupby_sum(filtered_party, 'พรรคการเมือง', 'คะแนน')
+                if not party_votes.empty:
+                    party_winner_idx = party_votes['คะแนน'].idxmax()
+                    party_winner = party_votes.loc[party_winner_idx, 'พรรคการเมือง']
+                    party_winner_votes = party_votes.loc[party_winner_idx, 'คะแนน']
+                    
+                    total_party_votes = party_votes['คะแนน'].sum()
+                    party_winner_pct = (party_winner_votes / total_party_votes * 100) if total_party_votes > 0 else 0
+                    
+                    st.info(f"**Party-List Winner:** {party_winner}")
+                    st.metric("Vote Share", f"{party_winner_pct:.1f}%", f"{party_winner_votes:,.0f} votes")
+        
+        with col2:
+            st.markdown("### 📈 Candidate Personal Strength")
+            
+            cand_strength = analyze_candidate_strength(filtered_const)
+            if not cand_strength.empty:
+                top3 = cand_strength.head(3)
+                
+                for idx, row in top3.iterrows():
+                    with st.container():
+                        st.markdown(f"**{row['ชื่อสกุล']}** ({row['พรรค']})")
+                        st.progress(min(row['Personal_Strength'] / 100, 1.0))
+                        st.caption(f"{row['คะแนน']:,.0f} votes • {row['Personal_Strength']:.1f}% of party total")
+                        st.markdown("")
+        
+        st.markdown("")
+        
+        # Early vs Regular insights
+        if df_early_const is not None and not df_early_const.empty:
+            st.markdown("### 🗳️ Early vs Regular Voting Patterns")
+            
+            early_insights = compare_early_vs_regular(filtered_const, df_early_const)
+            
+            if early_insights and 'biggest_gainer' in early_insights and early_insights['biggest_gainer'] is not None:
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    gainer = early_insights['biggest_gainer']
+                    st.success(f"**Strongest in Early Voting:** {gainer['ชื่อสกุล']} ({gainer['พรรค']})")
+                    st.metric("Early Vote Advantage", f"+{gainer['Difference']:.1f}%")
+                
+                with col2:
+                    loser = early_insights['biggest_loser']
+                    st.warning(f"**Weaker in Early Voting:** {loser['ชื่อสกุล']} ({loser['พรรค']})")
+                    st.metric("Early Vote Disadvantage", f"{loser['Difference']:.1f}%")
+    
+    with insight_tab2:
+        st.markdown("")
+        st.subheader("🔄 Split-Ticket Voting Analysis")
+        st.caption("Comparing constituency votes vs party-list votes by party")
+        st.markdown("")
+        
+        split_analysis = analyze_split_ticket_voting(filtered_const, filtered_party)
+        
+        if not split_analysis.empty:
+            # Summary cards
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                max_gain = split_analysis.loc[split_analysis['Difference'].idxmax()]
+                st.success(f"**Most Party-List Gain**")
+                st.metric(max_gain['Party'], f"+{max_gain['Difference']:,.0f} votes")
+                st.caption(f"{max_gain['Split_Pct']:.1f}% increase")
+            
+            with col2:
+                max_loss = split_analysis.loc[split_analysis['Difference'].idxmin()]
+                st.error(f"**Most Party-List Loss**")
+                st.metric(max_loss['Party'], f"{max_loss['Difference']:,.0f} votes")
+                st.caption(f"{max_loss['Split_Pct']:.1f}% decrease")
+            
+            with col3:
+                avg_split = split_analysis['Difference'].abs().mean()
+                st.info(f"**Average Split**")
+                st.metric("Mean Difference", f"{avg_split:,.0f} votes")
+            
+            st.markdown("")
+            st.markdown("### 📊 Detailed Split-Ticket Comparison")
+            
+            # Visualization
+            fig = go.Figure()
+            
+            fig.add_trace(go.Bar(
+                name='Constituency',
+                x=split_analysis['Party'],
+                y=split_analysis['Constituency_Votes'],
+                marker_color='lightblue'
+            ))
+            
+            fig.add_trace(go.Bar(
+                name='Party-List',
+                x=split_analysis['Party'],
+                y=split_analysis['PartyList_Votes'],
+                marker_color='lightcoral'
+            ))
+            
+            fig.update_layout(
+                barmode='group',
+                template='plotly_dark',
+                height=500,
+                xaxis_title="Party",
+                yaxis_title="Votes"
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.markdown("")
+            st.markdown("### 📋 Split-Ticket Data Table")
+            st.dataframe(
+                split_analysis,
+                use_container_width=True,
+                hide_index=True
+            )
+    
+    with insight_tab3:
+        st.markdown("")
+        st.subheader("📍 Geographic Voting Patterns")
+        st.markdown("")
+        
+        # Add tabs for Constituency and Party-List
+        geo_tab1, geo_tab2 = st.tabs(["🗳️ Constituency", "📋 Party-List"])
+        
+        with geo_tab1:
+            st.markdown("")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("### 🏰 Candidate Strongholds")
+                st.caption("Subdistricts with dominant candidate support")
+                st.markdown("")
+                
+                strongholds = find_stronghold_subdistricts(filtered_const, min_votes=50)
+                
+                if not strongholds.empty:
+                    top_strongholds = strongholds.head(10)
+                    
+                    for idx, row in top_strongholds.iterrows():
+                        with st.container():
+                            col_a, col_b = st.columns([3, 1])
+                            with col_a:
+                                st.markdown(f"**{row['ตำบล']}** → {row['พรรค']}")
+                            with col_b:
+                                st.markdown(f"**{row['Vote_Share']:.1f}%**")
+                            st.progress(row['Vote_Share'] / 100)
+                            st.markdown("")
+                else:
+                    st.info("No significant strongholds detected")
+            
+            with col2:
+                st.markdown("### ⚡ Competitive Areas")
+                st.caption("Close races with margins < 5%")
+                st.markdown("")
+                
+                competitive = find_competitive_areas(filtered_const, margin_threshold=5.0)
+                
+                if not competitive.empty:
+                    for idx, row in competitive.iterrows():
+                        with st.container():
+                            st.warning(f"**{row['ตำบล']}** - Margin: {row['Margin_Pct']:.2f}%")
+                            st.markdown(f"🥇 {row['Winner']} ({row['Winner_Party']}): {row['Winner_Votes']:,.0f}")
+                            st.markdown(f"🥈 {row['Runner_Up']} ({row['Runner_Up_Party']}): {row['Runner_Up_Votes']:,.0f}")
+                            st.markdown("")
+                else:
+                    st.success("No highly competitive areas detected")
+        
+        with geo_tab2:
+            st.markdown("")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("### 🏰 Party-List Strongholds")
+                st.caption("Subdistricts with dominant party-list support")
+                st.markdown("")
+                
+                # Analyze party-list strongholds
+                if 'ตำบล' in filtered_party.columns and 'พรรคการเมือง' in filtered_party.columns:
+                    subdistrict_party = filtered_party.groupby(['ตำบล', 'พรรคการเมือง'])['คะแนน'].sum().reset_index()
+                    
+                    # Get total votes per subdistrict
+                    total_per_subdistrict = subdistrict_party.groupby('ตำบล')['คะแนน'].sum().reset_index()
+                    total_per_subdistrict.columns = ['ตำบล', 'Total_Votes']
+                    
+                    # Merge and calculate percentage
+                    subdistrict_party = pd.merge(subdistrict_party, total_per_subdistrict, on='ตำบล')
+                    subdistrict_party['Vote_Share'] = (subdistrict_party['คะแนน'] / subdistrict_party['Total_Votes'] * 100)
+                    
+                    # Get top party per subdistrict
+                    idx = subdistrict_party.groupby('ตำบล')['คะแนน'].idxmax()
+                    party_strongholds = subdistrict_party.loc[idx]
+                    
+                    # Filter and sort
+                    party_strongholds = party_strongholds[party_strongholds['คะแนน'] >= 50].sort_values('Vote_Share', ascending=False)
+                    
+                    if not party_strongholds.empty:
+                        top_party_strongholds = party_strongholds.head(10)
+                        
+                        for idx, row in top_party_strongholds.iterrows():
+                            with st.container():
+                                col_a, col_b = st.columns([3, 1])
+                                with col_a:
+                                    st.markdown(f"**{row['ตำบล']}** → {row['พรรคการเมือง']}")
+                                with col_b:
+                                    st.markdown(f"**{row['Vote_Share']:.1f}%**")
+                                st.progress(row['Vote_Share'] / 100)
+                                st.markdown("")
+                    else:
+                        st.info("No significant party-list strongholds detected")
+                else:
+                    st.warning("Party-list data not available")
+            
+            with col2:
+                st.markdown("### 🔄 Party-List Competition")
+                st.caption("Subdistricts with close party-list races")
+                st.markdown("")
+                
+                # Find competitive party-list areas
+                if 'ตำบล' in filtered_party.columns and 'พรรคการเมือง' in filtered_party.columns:
+                    competitive_party = []
+                    
+                    for subdistrict in filtered_party['ตำบล'].unique():
+                        sub_data = filtered_party[filtered_party['ตำบล'] == subdistrict]
+                        party_votes = sub_data.groupby('พรรคการเมือง')['คะแนน'].sum().sort_values(ascending=False)
+                        
+                        if len(party_votes) >= 2:
+                            top1_party = party_votes.index[0]
+                            top2_party = party_votes.index[1]
+                            top1_votes = party_votes.iloc[0]
+                            top2_votes = party_votes.iloc[1]
+                            total_votes = party_votes.sum()
+                            
+                            if total_votes > 0:
+                                margin = ((top1_votes - top2_votes) / total_votes * 100)
+                                
+                                if margin <= 5.0:
+                                    competitive_party.append({
+                                        'ตำบล': subdistrict,
+                                        'Winner': top1_party,
+                                        'Winner_Votes': top1_votes,
+                                        'Runner_Up': top2_party,
+                                        'Runner_Up_Votes': top2_votes,
+                                        'Margin_Pct': margin
+                                    })
+                    
+                    if competitive_party:
+                        competitive_party_df = pd.DataFrame(competitive_party).sort_values('Margin_Pct')
+                        
+                        for idx, row in competitive_party_df.iterrows():
+                            with st.container():
+                                st.warning(f"**{row['ตำบล']}** - Margin: {row['Margin_Pct']:.2f}%")
+                                st.markdown(f"🥇 {row['Winner']}: {row['Winner_Votes']:,.0f}")
+                                st.markdown(f"🥈 {row['Runner_Up']}: {row['Runner_Up_Votes']:,.0f}")
+                                st.markdown("")
+                    else:
+                        st.success("No highly competitive party-list areas detected")
+                else:
+                    st.warning("Party-list data not available")
+        
+        st.markdown("")
+        st.markdown("### 🗺️ Turnout Anomalies by Location")
+        st.caption("Applies to regular voting only")
+        
+        turnout_anomalies = analyze_turnout_anomalies(filtered_const, std_threshold=2.0)
+        
+        if not turnout_anomalies.empty:
+            st.warning(f"Found **{len(turnout_anomalies)}** polling stations with unusual turnout")
+            
+            display_cols = ['ตำบล', 'หน่วยเลือกตั้งที่', 'turnout_rate', 'z_score']
+            st.dataframe(
+                turnout_anomalies[display_cols].sort_values('z_score', ascending=False),
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.success("No significant turnout anomalies detected")
+    
+    with insight_tab4:
+        st.markdown("")
+        st.subheader("⚡ Competitive Analysis")
+        st.markdown("")
+        
+        # Add tabs for Constituency and Party-List
+        comp_tab1, comp_tab2 = st.tabs(["🗳️ Constituency Race", "📋 Party-List Race"])
+        
+        with comp_tab1:
+            st.markdown("")
+            
+            # Margin analysis
+            if 'ชื่อสกุล' in filtered_const.columns:
+                cand_votes = safe_groupby_sum(filtered_const, 'ชื่อสกุล', 'คะแนน')
+                
+                if not cand_votes.empty and len(cand_votes) >= 2:
+                    cand_votes = cand_votes.sort_values('คะแนน', ascending=False)
+                    
+                    winner = cand_votes.iloc[0]
+                    runner_up = cand_votes.iloc[1]
+                    
+                    margin = winner['คะแนน'] - runner_up['คะแนน']
+                    total_votes = cand_votes['คะแนน'].sum()
+                    margin_pct = (margin / total_votes * 100) if total_votes > 0 else 0
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric("🥇 Winner", winner['ชื่อสกุล'])
+                        st.metric("Votes", f"{winner['คะแนน']:,.0f}")
+                    
+                    with col2:
+                        st.metric("🥈 Runner-Up", runner_up['ชื่อสกุล'])
+                        st.metric("Votes", f"{runner_up['คะแนน']:,.0f}")
+                    
+                    with col3:
+                        st.metric("📊 Victory Margin", f"{margin:,.0f} votes")
+                        st.metric("Margin %", f"{margin_pct:.2f}%")
+                    
+                    st.markdown("")
+                    
+                    # Competitiveness assessment
+                    if margin_pct < 3:
+                        st.error("🔥 **Highly Competitive Race** - Margin < 3%")
+                    elif margin_pct < 10:
+                        st.warning("⚡ **Competitive Race** - Margin < 10%")
+                    else:
+                        st.success("✅ **Clear Victory** - Margin > 10%")
+                    
+                    st.markdown("")
+                    st.markdown("### 📊 Candidate Vote Distribution")
+                    
+                    # Top 5 candidates comparison
+                    top5 = cand_votes.head(5)
+                    
+                    fig = go.Figure(data=[
+                        go.Bar(
+                            x=top5['ชื่อสกุล'],
+                            y=top5['คะแนน'],
+                            text=top5['คะแนน'],
+                            texttemplate='%{text:,.0f}',
+                            textposition='outside',
+                            marker_color=['gold', 'silver', '#CD7F32', 'lightblue', 'lightgray'][:len(top5)]
+                        )
+                    ])
+                    
+                    fig.update_layout(
+                        template='plotly_dark',
+                        height=400,
+                        xaxis_title="Candidate",
+                        yaxis_title="Votes",
+                        showlegend=False
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+        
+        with comp_tab2:
+            st.markdown("")
+            
+            # Party-list margin analysis
+            if 'พรรคการเมือง' in filtered_party.columns:
+                party_votes = safe_groupby_sum(filtered_party, 'พรรคการเมือง', 'คะแนน')
+                
+                if not party_votes.empty and len(party_votes) >= 2:
+                    party_votes = party_votes.sort_values('คะแนน', ascending=False)
+                    
+                    winner_party = party_votes.iloc[0]
+                    runner_up_party = party_votes.iloc[1]
+                    
+                    margin_party = winner_party['คะแนน'] - runner_up_party['คะแนน']
+                    total_party_votes = party_votes['คะแนน'].sum()
+                    margin_party_pct = (margin_party / total_party_votes * 100) if total_party_votes > 0 else 0
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric("🥇 Winner", winner_party['พรรคการเมือง'])
+                        st.metric("Votes", f"{winner_party['คะแนน']:,.0f}")
+                    
+                    with col2:
+                        st.metric("🥈 Runner-Up", runner_up_party['พรรคการเมือง'])
+                        st.metric("Votes", f"{runner_up_party['คะแนน']:,.0f}")
+                    
+                    with col3:
+                        st.metric("📊 Victory Margin", f"{margin_party:,.0f} votes")
+                        st.metric("Margin %", f"{margin_party_pct:.2f}%")
+                    
+                    st.markdown("")
+                    
+                    # Competitiveness assessment
+                    if margin_party_pct < 3:
+                        st.error("🔥 **Highly Competitive Race** - Margin < 3%")
+                    elif margin_party_pct < 10:
+                        st.warning("⚡ **Competitive Race** - Margin < 10%")
+                    else:
+                        st.success("✅ **Clear Victory** - Margin > 10%")
+                    
+                    st.markdown("")
+                    st.markdown("### 📊 Party Vote Distribution")
+                    
+                    # Top 5 parties comparison
+                    top5_party = party_votes.head(5)
+                    
+                    fig = go.Figure(data=[
+                        go.Bar(
+                            x=top5_party['พรรคการเมือง'],
+                            y=top5_party['คะแนน'],
+                            text=top5_party['คะแนน'],
+                            texttemplate='%{text:,.0f}',
+                            textposition='outside',
+                            marker_color=['gold', 'silver', '#CD7F32', 'lightcoral', 'lightpink'][:len(top5_party)]
+                        )
+                    ])
+                    
+                    fig.update_layout(
+                        template='plotly_dark',
+                        height=400,
+                        xaxis_title="Party",
+                        yaxis_title="Votes",
+                        showlegend=False
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    st.markdown("")
+                    st.markdown("### 📈 Vote Share Comparison")
+                    
+                    # Calculate vote shares
+                    party_votes['Vote_Share'] = (party_votes['คะแนน'] / total_party_votes * 100)
+                    
+                    # Show top 10 parties with vote share
+                    top10_party = party_votes.head(10)
+                    
+                    fig2 = px.bar(
+                        top10_party,
+                        x='พรรคการเมือง',
+                        y='Vote_Share',
+                        text='Vote_Share',
+                        template='plotly_dark',
+                        color='Vote_Share',
+                        color_continuous_scale='Reds'
+                    )
+                    
+                    fig2.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+                    fig2.update_layout(
+                        height=400,
+                        xaxis_title="Party",
+                        yaxis_title="Vote Share (%)",
+                        showlegend=False
+                    )
+                    
+                    st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.warning("Party-list data not available")
+    
+    st.markdown("---")
+    
+    # ========================================================================
+    # SECTION 8: VALIDATION CHECKS
+    # ========================================================================
+    st.header("8️⃣ Validation & Quality Checks")
     st.markdown("")
     
     tab1, tab2, tab3 = st.tabs(["🔍 Ballot Consistency", "⚠️ Suspicious Stations", "📊 Data Quality"])
