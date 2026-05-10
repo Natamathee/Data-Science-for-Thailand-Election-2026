@@ -59,7 +59,6 @@ data/raw_pdf/
 data/raw_jpg/
 data/processed/
 data/temp/
-*.csv
 *.xlsx
 
 # Allow reference folder
