@@ -440,24 +440,62 @@ def main():
     st.header("1️⃣ Overview")
     st.markdown("")
     
-    # Calculate KPIs
-    total_eligible = safe_sum(filtered_const, 'จำนวนผู้มีสิทธิเลือกตั้ง')
-    total_turnout_regular = safe_sum(filtered_const, 'จำนวนผู้มาแสดงตน')
+    # Calculate KPIs - Group by polling station first to avoid double counting
+    if 'ตำบล' in filtered_const.columns and 'หน่วยเลือกตั้งที่' in filtered_const.columns:
+        station_summary = filtered_const.groupby(['ตำบล', 'หน่วยเลือกตั้งที่']).agg({
+            'จำนวนผู้มีสิทธิเลือกตั้ง': 'first',
+            'จำนวนผู้มาแสดงตน': 'first',
+            'จำนวนบัตรดี': 'first',
+            'จำนวนบัตรเสีย': 'first',
+            'จำนวนบัตรที่ใช้': 'first',
+            'จำนวนบัตรที่ไม่เลือกผู้สมัคร': 'first'
+        }).reset_index()
+        
+        total_eligible = safe_sum(station_summary, 'จำนวนผู้มีสิทธิเลือกตั้ง')
+        total_turnout_regular = safe_sum(station_summary, 'จำนวนผู้มาแสดงตน')
+        total_valid = safe_sum(station_summary, 'จำนวนบัตรดี')
+        total_invalid = safe_sum(station_summary, 'จำนวนบัตรเสีย')
+        total_ballots = safe_sum(station_summary, 'จำนวนบัตรที่ใช้')
+        total_no_vote = safe_sum(station_summary, 'จำนวนบัตรที่ไม่เลือกผู้สมัคร')
+    else:
+        total_eligible = safe_sum(filtered_const, 'จำนวนผู้มีสิทธิเลือกตั้ง')
+        total_turnout_regular = safe_sum(filtered_const, 'จำนวนผู้มาแสดงตน')
+        total_valid = safe_sum(filtered_const, 'จำนวนบัตรดี')
+        total_invalid = safe_sum(filtered_const, 'จำนวนบัตรเสีย')
+        total_ballots = safe_sum(filtered_const, 'จำนวนบัตรที่ใช้')
+        total_no_vote = safe_sum(filtered_const, 'จำนวนบัตรที่ไม่เลือกผู้สมัคร')
     
-    # Early voting turnout
+    # Early voting turnout - Group by ชุดที่ first
     total_turnout_early = 0
+    early_valid = 0
+    early_invalid = 0
+    early_no_vote = 0
+    
     if df_early_const is not None and not df_early_const.empty:
-        total_turnout_early = (
-            safe_sum(df_early_const, 'บัตรดี') +
-            safe_sum(df_early_const, 'บัตรเสีย') +
-            safe_sum(df_early_const, 'บัตรที่ไม่เลือก')
-        )
+        if 'ชุดที่' in df_early_const.columns:
+            early_summary = df_early_const.groupby('ชุดที่').agg({
+                'บัตรดี': 'first',
+                'บัตรเสีย': 'first',
+                'บัตรที่ไม่เลือก': 'first'
+            }).reset_index()
+            
+            early_valid = safe_sum(early_summary, 'บัตรดี')
+            early_invalid = safe_sum(early_summary, 'บัตรเสีย')
+            early_no_vote = safe_sum(early_summary, 'บัตรที่ไม่เลือก')
+            total_turnout_early = early_valid + early_invalid + early_no_vote
+        else:
+            early_valid = safe_sum(df_early_const, 'บัตรดี')
+            early_invalid = safe_sum(df_early_const, 'บัตรเสีย')
+            early_no_vote = safe_sum(df_early_const, 'บัตรที่ไม่เลือก')
+            total_turnout_early = early_valid + early_invalid + early_no_vote
     
     total_turnout = total_turnout_regular + total_turnout_early
     turnout_pct = (total_turnout / total_eligible * 100) if total_eligible > 0 else 0
     
-    total_valid = safe_sum(filtered_const, 'จำนวนบัตรดี')
-    total_invalid = safe_sum(filtered_const, 'จำนวนบัตรเสีย')
+    # Combined ballot counts (regular + early)
+    total_valid_combined = total_valid + early_valid
+    total_invalid_combined = total_invalid + early_invalid
+    total_no_vote_combined = total_no_vote + early_no_vote
     
     # Winning candidate
     winning_candidate = "N/A"
@@ -491,15 +529,14 @@ def main():
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("📝 Valid Ballots", f"{total_valid:,.0f}")
+        st.metric("📝 Valid Ballots", f"{total_valid_combined:,.0f}")
     
     with col2:
-        invalid_pct = (total_invalid / total_turnout * 100) if total_turnout > 0 else 0
-        st.metric("❌ Invalid Ballots", f"{total_invalid:,.0f}", f"{invalid_pct:.2f}%")
+        invalid_pct = (total_invalid_combined / total_turnout * 100) if total_turnout > 0 else 0
+        st.metric("❌ Invalid Ballots", f"{total_invalid_combined:,.0f}", f"{invalid_pct:.2f}%")
     
     with col3:
-        no_vote = safe_sum(filtered_const, 'จำนวนบัตรที่ไม่เลือกผู้สมัคร')
-        st.metric("⚪ No Vote", f"{no_vote:,.0f}")
+        st.metric("⚪ No Vote", f"{total_no_vote_combined:,.0f}")
     
     st.markdown("")
     
@@ -692,23 +729,24 @@ def main():
     st.header("6️⃣ Ballot Analysis")
     st.markdown("")
     
-    total_ballots = safe_sum(filtered_const, 'จำนวนบัตรที่ใช้')
-    total_valid_ballots = safe_sum(filtered_const, 'จำนวนบัตรดี')
-    total_invalid_ballots = safe_sum(filtered_const, 'จำนวนบัตรเสีย')
-    total_no_vote = safe_sum(filtered_const, 'จำนวนบัตรที่ไม่เลือกผู้สมัคร')
+    # Combine regular and early voting ballots
+    total_ballots_combined = total_ballots + (early_valid + early_invalid + early_no_vote)
+    total_valid_combined = total_valid + early_valid
+    total_invalid_combined = total_invalid + early_invalid
+    total_no_vote_combined = total_no_vote + early_no_vote
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("📋 Total Ballots", f"{total_ballots:,.0f}")
+        st.metric("📋 Total Ballots", f"{total_ballots_combined:,.0f}")
     
     with col2:
-        invalid_rate = (total_invalid_ballots / total_ballots * 100) if total_ballots > 0 else 0
-        st.metric("❌ Invalid Ballots", f"{total_invalid_ballots:,.0f}", f"{invalid_rate:.2f}%")
+        invalid_rate = (total_invalid_combined / total_ballots_combined * 100) if total_ballots_combined > 0 else 0
+        st.metric("❌ Invalid Ballots", f"{total_invalid_combined:,.0f}", f"{invalid_rate:.2f}%")
     
     with col3:
-        no_vote_rate = (total_no_vote / total_ballots * 100) if total_ballots > 0 else 0
-        st.metric("⚪ No Vote", f"{total_no_vote:,.0f}", f"{no_vote_rate:.2f}%")
+        no_vote_rate = (total_no_vote_combined / total_ballots_combined * 100) if total_ballots_combined > 0 else 0
+        st.metric("⚪ No Vote", f"{total_no_vote_combined:,.0f}", f"{no_vote_rate:.2f}%")
     
     st.markdown("")
     
@@ -717,7 +755,7 @@ def main():
     
     ballot_data = pd.DataFrame({
         'Type': ['Valid', 'Invalid', 'No Vote'],
-        'Count': [total_valid_ballots, total_invalid_ballots, total_no_vote]
+        'Count': [total_valid_combined, total_invalid_combined, total_no_vote_combined]
     })
     
     fig = px.pie(
